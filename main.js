@@ -1,1313 +1,698 @@
-var express = require("express");
-var app = express();
-var EventEmitter = require("events").EventEmitter;          // Forse
-var mysql = require('mysql');
-var port = 8080;
-var http = require('http');
 var fs = require('fs');
-var path = require('path');
+var mysql = require('mysql');
+var express = require('express');
+var app = express();
+var server = require('http').createServer(app);
+var socket = require('socket.io')(server);
+var paths = ['/favicon.ico', '/', '/images/loading.gif', '/startGame.html', '/www/js/game.js', '/www/js/phaser.js', '/www/img/Sfondo_.png', '/www/img/borderLeft.png', '/www/img/borderTop.png', '/www/img/borderRight.png', '/www/img/borderBottom.png', '/www/img/puck.png', '/www/img/striker.png', '/finishGame.html', '/mainGame.html', '/index.html', '/registration.html', '/www/js/script.js', '/contact.html', '/css/animate.css', '/css/icomoon.css', '/css/bootstrap.css', '/css/style.css', '/js/modernizr-2.6.2.min.js', '/js/jquery.min.js', '/js/jquery.easing.1.3.js', '/js/bootstrap.min.js', '/js/jquery.waypoints.min.js', '/js/main.js', '/images/loader.gif', '/images/img_bg_2.jpg', '/images/sfondoWeb2.png', '/fonts/icomoon/icomoon.ttf', '/errorPage.html'];
+var usersSocket = [];
 
-// Inizializzazione socket per l'instaurazione della connessione 
-const {fork} = require ('child_process');  
-var child_process = fork('createSocket.js');
+const { fork } = require('child_process');
 
-// Inizializzazione del padre
+var roomList = [];
+var expWinner = 7;
+var expLoser = 3;
 
-console.log("ServerPadre avviato sulla porta ",port,"...");
+var roomParams = {
+  id: null,
+  instance: null,
+  nickname1: null,
+  nickname2: null,
+  type: null,
+  password: null,
+  state: 'free',
+  name: null,
+  winner: null,
+  loser: null,
+  countReport: 0,
+  finish: false
+};
 
-var serverGame = [];
-var finalDataUsers = [0,0,0,0];
-
-var livEXP = [10,25,45,75,115,165,230,310,405,530];
-var pointWinner=7;
-var pointLoser=3;
-
-// Differenza exp per ogni livello
-// 10 15 20 30 40 50 65 80 95 125
-
-
-for(var i=0;i<4;i++){
-    serverGame[i] = fork("serverGame.js");      
+function findNickname(socket) {
+  for(var i=0; i<usersSocket.length; i++) {
+      if(usersSocket[i].socket == socket) {
+          return usersSocket[i].nickname;
+      }
+  }
+  return null;
 }
 
-var usersConnected = [];
-var usersPlayGame = [];
-var countUsers = [0,0,0,0];
-var maxNumPlayers = 8;
-var instanceServerUsers = [];
-
-/* STANZA LIBERA = false, OCCUPATA =  true */
-var room = [false, false, false, false];
-
-getNickUsers = () =>{
-    var nick1="",nick2="";
-    var userRoomPlay="";
-    if(room[0]==true){
-        
-        for(var i=0;i<usersPlayGame.length;i++){
-            if(nick1=="" && usersPlayGame[i].stanza==1)         nick1=usersPlayGame[i].nick;
-            else if(nick2=="" && usersPlayGame[i].stanza==1)    nick2=usersPlayGame[i].nick;
-            if(nick1!="" && nick2!="") break;
-        }
-        userRoomPlay+=""+nick1+","+nick2+",";
-        nick1=nick2="";
-        console.log("Passo da 0-> ",userRoomPlay);
-    }
-    else    userRoomPlay+="_,_,";
-    if(room[1]==true){
-        
-        for(var i=0;i<usersPlayGame.length;i++){
-            if(nick1=="" && usersPlayGame[i].stanza==2)         nick1=usersPlayGame[i].nick;
-            else if(nick2=="" && usersPlayGame[i].stanza==2)    nick2=usersPlayGame[i].nick;
-            if(nick1!="" && nick2!="") break;
-        }
-        userRoomPlay+=""+nick1+","+nick2+",";
-        nick1=nick2="";
-        console.log("Passo da 1-> ",userRoomPlay);
-    }
-    else    userRoomPlay+="_,_,";
-    if(room[2]==true){
-        
-        for(var i=0;i<usersPlayGame.length;i++){
-            if(nick1=="" && usersPlayGame[i].stanza==3)         nick1=usersPlayGame[i].nick;
-            else if(nick2=="" && usersPlayGame[i].stanza==3)    nick2=usersPlayGame[i].nick;
-            if(nick1!="" && nick2!="") break;
-        }
-        userRoomPlay+=""+nick1+","+nick2+",";
-        nick1=nick2="";
-        console.log("Passo da 2-> ",userRoomPlay);
-    }
-    else    userRoomPlay+="_,_,";
-    if(room[3]==true){
-        
-        for(var i=0;i<usersPlayGame.length;i++){
-            if(nick1=="" && usersPlayGame[i].stanza==4)         nick1=usersPlayGame[i].nick;
-            else if(nick2=="" && usersPlayGame[i].stanza==4)    nick2=usersPlayGame[i].nick;
-            if(nick1!="" && nick2!="") break;
-        }
-        userRoomPlay+=""+nick1+","+nick2+",";
-        nick1=nick2="";
-        console.log("Passo da 3-> ",userRoomPlay);
-    }
-    else    userRoomPlay+="_,_";
-
-    return userRoomPlay;
+function getSocket(nickname) {
+  for(var i=0; i<usersSocket.length; i++) {
+      if(usersSocket[i].nickname == nickname) {
+          return usersSocket[i].socket;
+      }
+  }
+  return null;
 }
 
+function findSocketIndex(nickname) {
+  for(var i=0; i<usersSocket.length; i++) {
+      if(usersSocket[i].nickname == nickname) {
+          return i;
+      }
+  }
+  return null;
+}
 
-/* COMUNICAZIONE DA FIGLIO_SOCKET A PADRE */
-child_process.on("message", (data) =>{
+function refreshRoomsList() {
+  var response = [];
+  roomList.forEach((element) => {
+    var room = {
+      id: element.id,
+      nickname1: element.nickname1,
+      nickname2: element.nickname2,
+      name: element.name,
+      state: element.state,
+      type: element.type
+    };
+    response.push(room);
+  });
+  return response;
+}
 
-    /*  
-        La coppia dei giocatori e' gestita con un array di oggetti
-        ove ad ogni indice del serverGame corrispondono 2 nick.
-    */ 
-   
-    var indiceServer;
-    for(var i=0;i<instanceServerUsers.length;i++){
-        if(instanceServerUsers.length>0 && instanceServerUsers[i].nick1==data.nick || instanceServerUsers[i].nick2==data.nick){
-            indiceServer = instanceServerUsers[i].indice;
-            break;
-        }
-    }
-
-    switch(data.event){
-        case "requestStartGame":{
-            
-            console.log("requestStartGame RICEVUTO-> ",data," __>",data.stanza);
-            
-            var userData = {
-                nick: data.nick,
-                stanza: data.stanza
-            };
-
-            usersPlayGame[usersPlayGame.length]=userData;
-            console.log("OGGETTO SALVATO= ",usersPlayGame);
-
-            var nick1="",nick2="";
-
-            if(data.stanza=="random"){
-                
-                var stanza=-1;
-                
-                for(var i=0;i<room.length;i++){
-                    if(room[i]==false && countUsers[i]==1){
-                        stanza=i;
-                        break;
-                    }
-                }
-                if(stanza==-1)  stanza=room.indexOf(false);
-
-                countUsers[stanza]++;
-                userData.stanza=stanza+1;
-                usersPlayGame[usersPlayGame.length-1]=userData;
-
-                console.log("STANZA ASSEGNATA RANDOM->",countUsers);
-                if(countUsers[stanza]==2){
-                    for(var j=0;j<usersPlayGame.length;j++){
-                        
-                        if(nick1=="" && usersPlayGame[j].stanza==(stanza+1)){
-                            nick1=usersPlayGame[j].nick;
-                        }
-                        else if(nick2=="" && usersPlayGame[j].stanza==(stanza+1)){
-                            nick2=usersPlayGame[j].nick;
-                        }
-
-                        if(nick1!="" && nick2!="") break;
-                    }
-
-                    instanceServerUsers[instanceServerUsers.length]={indice:stanza, nick1:nick1, nick2:nick2};
-                    console.log("TERNA instanceServerUsers: ",instanceServerUsers[stanza]);
-
-                    serverGame[stanza].send({event:"id",indice:stanza});
-                    serverGame[stanza].send({
-                        event:"startUpServer",
-                        nick1:nick1,
-                        nick2:nick2
-                    });
-
-                }
-            }
-            else if(data.stanza>=1 && data.stanza<=4){
-                countUsers[(data.stanza)-1]++;
-                console.log("STANZA RICHIESTA NUMERO->",countUsers);
-                         
-                if(countUsers[(data.stanza)-1]==2){
-                    room[(data.stanza)-1]=true;
-
-                    for(var i=0;i<usersPlayGame.length;i++){
-            
-                        if(nick1=="" && usersPlayGame[i].stanza==data.stanza){
-                            nick1=usersPlayGame[i].nick;
-                        }
-                        else if(nick2=="" && usersPlayGame[i].stanza==data.stanza){
-                            nick2=usersPlayGame[i].nick;
-                        }
-
-                        if(nick1!="" && nick2!="") break;
-                    }
-
-                    instanceServerUsers[instanceServerUsers.length]={indice:(data.stanza)-1, nick1:nick1, nick2:nick2};
-                    console.log("TERNA instanceServerUsers: ",instanceServerUsers[(data.stanza)-1]);
-
-                    serverGame[(data.stanza)-1].send({event:"id",indice:(data.stanza)-1});
-                    serverGame[(data.stanza)-1].send({
-                        event:"startUpServer",
-                        nick1:nick1,
-                        nick2:nick2
-                    });
-                }
-            }
-
-            break;
-        }
-        case "myPosition":{
-            console.log("EVENTO MY_POSITION DA:",data.nick);
-            serverGame[indiceServer].send({event:"id",indice:indiceServer});
-            serverGame[indiceServer].send(data);
-            break;
-        }
-        case "rivalPosition":{
-            console.log("EVENTO rivalPosition DA:",data.nick);
-            serverGame[indiceServer].send({event:"id",indice:indiceServer});
-            serverGame[indiceServer].send(data);
-            break;
-        }
-        case "moveMyPosition":{
-            console.log("EVENTO MOVE_MY_POSITION DA:",data.nick);
-            serverGame[indiceServer].send({event:"id",indice:indiceServer});
-            serverGame[indiceServer].send(data);
-            break;
-        }
-        case "goalSuffered":{
-            console.log("EVENTO goalSuffered DA:",data.nick);
-            serverGame[indiceServer].send({event:"id",indice:indiceServer});
-            serverGame[indiceServer].send(data);
-            break;
-        }
-        case "puckPosition":{
-            
-            serverGame[indiceServer].send({event:"id",indice:indiceServer});
-            serverGame[indiceServer].send(data);
-            break;
-        }
-        case "puckInitialize":{
-            console.log("EVENTO puckInitialize DA:",data.nick);
-            serverGame[indiceServer].send({event:"id",indice:indiceServer});
-            serverGame[indiceServer].send(data);
-            break;
-        }
-    }
-
-});
-
-updateStatPlayers = (data) =>{
-    finalDataUsers[data.id]={nick1:data.nick1,nick2:data.nick2,winner:data.winner};
-    
-    var con = mysql.createConnection({
-        host: "127.0.0.1",
-        user: "root",
-        password: "",
-        database: "dbgiocohockey"
+function connect(con, data, func) {
+  return new Promise(async function (resolve) {
+    var executeQuery = await function () {
+      return new Promise((resolve) => {
+        con.connect(async function (err) {
+          if (err) throw err;
+          console.log('Connessione al db riuscita..');
+          var result = await func(con, data);
+          resolve(result);
+        });
+      });
+    };
+    executeQuery().then((result) => {
+      resolve(result);
     });
-    if(con) {}
-    else{
-        console.log("Connessione Fallita!\nImpossibile aggiornare i dati dei player dopo la partita!");
-    }
-
-    con.connect(function(err) {
-        if (err) throw err;
-        
-        var liv;
-        var exp;
-
-        //Winner
-        
-        var usrWinner = finalDataUsers[data.id].nick1==finalDataUsers[data.id].winner?finalDataUsers[data.id].nick1:finalDataUsers[data.id].nick2;
-                        
-        con.query("SELECT Livello,EXP FROM giocatore WHERE Nickname='"+usrWinner+"'", function (err, result, fields) {
-        if (err) throw err;
-        else{
-            if(result==''){          
-            }        
-            else{
-                liv=result[0].Livello;
-                exp=result[0].EXP;
-
-                exp+=pointWinner;
-                if(liv < livEXP.length && exp >= livEXP[liv]  ) liv++;
-
-                con.query("UPDATE giocatore SET Livello='"+liv+"', EXP='"+exp+"' WHERE Nickname='"+usrWinner+"'", function (err, result, fields) {
-                    if (err) throw err;
-                    else {}
-                });
-                con.on('error', function(err) {
-                    console.log("WINNER[UPDATE] - [mysql error]",err);
-                });
-
-            }
-        }
-        });
-        con.on('error', function(err) {
-            console.log("WINNER[SELECT] - [mysql error]",err);
-        });
-            
-        //Loser
-
-        var usrLoser = finalDataUsers[data.id].nick1!=finalDataUsers[data.id].winner?finalDataUsers[data.id].nick1:finalDataUsers[data.id].nick2;
-
-        con.query("SELECT Livello,EXP FROM giocatore WHERE Nickname='"+usrLoser+"'", function (err, result, fields) {
-            if (err) throw err;
-            else{
-                if(result=='') {}        
-                else{
-                    liv=result[0].Livello;
-                    exp=result[0].EXP;
-    
-                    exp+=pointLoser;
-                    if(liv < livEXP.length && exp >= livEXP[liv]  ) liv++;
-    
-                    con.query("UPDATE giocatore SET Livello='"+liv+"', EXP='"+exp+"' WHERE Nickname='"+usrLoser+"'", function (err, result, fields) {
-                        if (err) throw err;
-                        else {}
-                    });
-                    con.on('error', function(err) {
-                        console.log("LOSER[UPDATE] - [mysql error]",err);
-                    });
-    
-                }
-            }
-        });
-        con.on('error', function(err) {
-            console.log("LOSER[SELECT] - [mysql error]",err);
-        });
-
-       /* TEST DOPO LA MODIFICA DEI DATI NEL DATABASE
-        con.query("SELECT Nickname,Livello,EXP FROM giocatore", function (err, result, fields) {
-        if (err) throw err;
-        else{
-            for(var i=0;i<result.length;i++){
-                console.log("TEST DB ",result[i].Nickname," ",result[i].Livello," ",result[i].EXP);
-            }
-        }
-        });
-        con.on('error', function(err) {
-            console.log("W - [mysql error]",err);
-        });
-
-        END TEST */
-    });
-    
-    console.log("PADRE [Partita conclusa] -  Salvataggio dati di serverGame[",data.id,"] effettuato!");
-    
+  });
 }
 
+async function connectDB(data, func) {
+  var con = mysql.createConnection({
+    host: '127.0.0.1',
+    user: 'root',
+    password: '',
+    database: 'dbgiocohockey',
+  });
+  if (!con) {
+    console.log('Connessione Fallita!\nImpossibile aggiornare i dati dei player dopo la partita!');
+  }
+  var result = await connect(con, data, func).then((data) => (result = data));
+  return result;
+}
 
-serverGame[0].on("message", (data) =>{
-    switch(data.event){
-        case "myPosition":{
-            child_process.send(data);
-            break;
-        }
-        case "rivalPosition":{
-            child_process.send(data);
-            break;
-        }
-        case "moveRivalPosition":{
-            child_process.send(data);
-            break;
-        }
-        case "positionBall":{
-            child_process.send(data);
-            break;
-        }
-        case "users_game":{
-            child_process.send(data);
-            break;
-        }
-        case "setIDPorta":{
-            child_process.send(data);
-            break;
-        }
-        case "start_game":{
-            child_process.send(data);
-            break;
-        }
-        case "finishGame":{
-            child_process.send(data);
-            break;
-        }
-        case "refreshScoreGame":{
-            child_process.send(data);
-            break;
-        }
-        case "puckPosition":{
-            child_process.send(data);
-            break;
-        }
-        case "updateDataDB":{
-            updateStatPlayers(data);
-        }
-        case "setPositionPuck":{
-            child_process.send(data);
-            break;
-        }
-        case "stopServerGame":{
-            console.log("PADRE - RESET FIGLIO EFFETTUATO, pos:",data.id);
+function createInstanceGame(room, nickname) {
+  updateRoom(room, nickname);
+  sendMessage({event: 'updateRooms', nickname: nickname, data: refreshRoomsList()});
+  room.instance = fork('serverGame.js');
+  messageServerGame(room);
+  room.instance.send({
+    event:'gameUsers',
+    nickname1: room.nickname1,
+    nickname2: room.nickname2
+  });
+}
 
-            countUsers[data.id]=0;
-            for(var i=0;i<usersPlayGame.length;){
-                if(usersPlayGame[i].stanza==(data.id)+1)   usersPlayGame.splice(i,1);
-                else i++;
-            }
-            room[data.id] = false;
-            instanceServerUsers.splice(data.id,1);
-        }
+function updateRoom(room, nickname) {
+  room.state = 'busy';
+  room.nickname2 = nickname;
+}
+
+function deleteRoom(room) {
+  if(room.instance) {
+    room.finish = true;
+    room.instance.kill('SIGINT');
+  }
+  var indexRoom;
+  for(var i=0; i<roomList.length; i++) {
+    if(roomList[i].id == room.id) {
+      indexRoom = i;
+      break;
     }
-});
+  }
+  roomList.splice(indexRoom, 1);
+  sendMessage({event: 'updateRooms', nickname: room.nickname1, data: refreshRoomsList()});
+}
 
-
-serverGame[1].on("message", (data) =>{
-    switch(data.event){
-        case "myPosition":{
-            child_process.send(data);
-            break;
-        }
-        case "rivalPosition":{
-            child_process.send(data);
-            break;
-        }
-        case "moveRivalPosition":{
-            child_process.send(data);
-            break;
-        }
-        case "positionBall":{
-            child_process.send(data);
-            break;
-        }
-        case "users_game":{
-            child_process.send(data);
-            break;
-        }
-        case "setIDPorta":{
-            child_process.send(data);
-            break;
-        }
-        case "start_game":{
-            child_process.send(data);
-            break;
-        }
-        case "finishGame":{
-            child_process.send(data);
-            break;
-        }
-        case "refreshScoreGame":{
-            child_process.send(data);
-            break;
-        }
-        case "puckPosition":{
-            child_process.send(data);
-            break;
-        }
-        case "updateDataDB":{
-            updateStatPlayers(data);
-        }
-        case "setPositionPuck":{
-            child_process.send(data);
-            break;
-        }
-        case "stopServerGame":{
-            console.log("PADRE - RESET FIGLIO EFFETTUATO, pos:",data.id);
-           
-            countUsers[data.id]=0;
-            for(var i=0;i<usersPlayGame.length;){
-                if(usersPlayGame[i].stanza==(data.id)+1)   usersPlayGame.splice(i,1);
-                else i++;
-            }
-            room[data.id] = false;
-            instanceServerUsers.splice(data.id,1);
-        }
+function findRoom(id) {
+  for(var i=0; i<roomList.length; i++) {
+    if(roomList[i].id == id) {
+      return roomList[i];
     }
-});
+  }
+  return null;
+}
 
-serverGame[2].on("message", (data) =>{
-    switch(data.event){
-        case "myPosition":{
-            child_process.send(data);
-            break;
-        }
-        case "rivalPosition":{
-            child_process.send(data);
-            break;
-        }
-        case "moveRivalPosition":{
-            child_process.send(data);
-            break;
-        }
-        case "positionBall":{
-            child_process.send(data);
-            break;
-        }
-        case "users_game":{
-            child_process.send(data);
-            break;
-        }
-        case "setIDPorta":{
-            child_process.send(data);
-            break;
-        }
-        case "start_game":{
-            child_process.send(data);
-            break;
-        }
-        case "finishGame":{
-            child_process.send(data);
-            break;
-        }
-        case "refreshScoreGame":{
-            child_process.send(data);
-            break;
-        }
-        case "puckPosition":{
-            child_process.send(data);
-            break;
-        }
-        case "updateDataDB":{
-            updateStatPlayers(data);
-        }
-        case "setPositionPuck":{
-            child_process.send(data);
-            break;
-        }
-        case "stopServerGame":{
-            console.log("PADRE - RESET FIGLIO EFFETTUATO, pos:",data.id);
-        
-            countUsers[data.id]=0;
-            for(var i=0;i<usersPlayGame.length;){
-                if(usersPlayGame[i].stanza==(data.id)+1)   usersPlayGame.splice(i,1);
-                else i++;
-            }
-            room[data.id] = false;
-            instanceServerUsers.splice(data.id,1);
-        }
+function findRoomWithNickname(nickname) {
+  for(var i=0; i<roomList.length; i++) {
+    if(roomList[i].nickname1 == nickname || roomList[i].nickname2 == nickname) {
+      return roomList[i];
     }
-});
+  }
+  return null;
+}
 
-
-serverGame[3].on("message", (data) =>{
-    switch(data.event){
-        case "myPosition":{
-            child_process.send(data);
-            break;
-        }
-        case "rivalPosition":{
-            child_process.send(data);
-            break;
-        }
-        case "moveRivalPosition":{
-            child_process.send(data);
-            break;
-        }
-        case "positionBall":{
-            child_process.send(data);
-            break;
-        }
-        case "users_game":{
-            child_process.send(data);
-            break;
-        }
-        case "setIDPorta":{
-            child_process.send(data);
-            break;
-        }
-        case "start_game":{
-            child_process.send(data);
-            break;
-        }
-        case "finishGame":{
-            child_process.send(data);
-            break;
-        }
-        case "refreshScoreGame":{
-            child_process.send(data);
-            break;
-        }
-        case "puckPosition":{
-            child_process.send(data);
-            break;
-        }
-        case "updateDataDB":{
-            updateStatPlayers(data);
-        }
-        case "setPositionPuck":{
-            child_process.send(data);
-            break;
-        }
-        case "stopServerGame":{
-            console.log("PADRE - RESET FIGLIO EFFETTUATO, pos:",data.id);
-
-            countUsers[data.id]=0;
-            for(var i=0;i<usersPlayGame.length;){
-                if(usersPlayGame[i].stanza==(data.id)+1)   usersPlayGame.splice(i,1);
-                else i++;
-            }
-            room[data.id] = false;
-            instanceServerUsers.splice(data.id,1);
-        }
+function findFreeRoom() {
+  for(var i=0; i<roomList.length; i++) {
+    if(roomList[i].type == 'public') {
+      return roomList[i];
     }
-});
+  }
+  return null;
+}
 
-/* COMUNICAZIONE DA PADRE A FIGLIO */
-/*
-child_process.send({
-    message: `Inviato da processo padre con PID: ${process.pid}\n`
-});
-*/
+function findRivalNickname(room, nickname) {
+  if (room) {
+    if(room.nickname1 == nickname) {
+      return room.nickname2;
+    }
+    return room.nickname1;
+  }
+}
 
-var serverHTTP = http.createServer((req,res) =>{
+function prepareGame(room, nickname) {
+  createInstanceGame(room, nickname);
+  sendMessage({event: 'waitingGame', nickname: room.nickname1});
+  sendMessage({event: 'waitingGame', nickname: room.nickname2});
+}
 
-    //console.log("Messaggio ricevuto", req.url);
+function sendServerGame(room, data) {
+  if(room && room.instance && !room.finish) {
+    room.instance.send(data);
+  }
+}
 
-    if (req.method == "GET") {
+function eventMessage(data) {
+  var params = data.data;
+  switch (data.event) {
+    case 'getRooms': {
+      sendMessage({event: 'getRooms', nickname: data.nickname, data: refreshRoomsList()});
+      break;
+    }
+    case 'joinIntoRoom': {
+      var room = findRoom(params.id);
 
-        console.log(req.url);
+      if (room.state == 'busy') {
+        sendMessage({event: 'busyRoom', nickname: data.nickname});
+      } 
+      else if (room.type == 'private') {
+        if(room.password == params.password ) {
+          prepareGame(room, data.nickname);
+        } else {
+          sendMessage({event: 'passwordError', nickname: data.nickname});
+        }
+      }
+      else {
+        prepareGame(room, data.nickname);
+      }
+      break;
+    }
+    case 'createRoom': {
+      var newRoom = {...roomParams};
+      newRoom.id = roomList.length;
+      newRoom.nickname1 =  data.nickname;
+      newRoom.type = params.type;
+      if (params.type === 'private') {
+        newRoom.password = params.password
+      }
+      newRoom.name = params.name;
+      roomList.push(newRoom);
+      sendMessage({event: 'updateRooms', nickname: data.nickname, data: refreshRoomsList()});
+      sendMessage({event: 'waitingPlayer', nickname: data.nickname});
+      break;
+    }
+    case 'loginUser': {
+      var query = `SELECT COUNT(nickname) FROM players WHERE BINARY nickname='${params.nickname}' AND BINARY password='${params.password}'`
 
-        if(req.url.indexOf('index.html') != -1){
-                fs.readFile(__dirname + '/index.html', function (err, data) {
-                if (err) console.log(err);
-                res.writeHead(200, {'Content-Type': 'text/html'});
-                res.write(data);
-                res.end();
-            });
+      connectDB(query, queryDB).then((result) => {
+        if (result.error != null || Object.values(result.data[0])[0] === 0) {
+          sendMessage({event: 'endSocket', nickname: params.nickname, data: {path: '/errorPage.html', message: `Errore nell'inserimento dei dati!`}});
+        } else {
+          sendMessage({event: 'redirect', nickname: params.nickname, data: {path: '/mainGame.html', key: params.nickname}});
         }
-        else if(req.url.indexOf('registration.html') != -1){
-            fs.readFile(__dirname + '/registration.html', function (err, data) {
-                if (err) console.log(err);
-                res.writeHead(200, {'Content-Type': 'text/html'});
-                res.write(data);
-                res.end();
-            });
-        }
-        else if(req.url.indexOf('contact.html') != -1){
-            fs.readFile(__dirname + '/contact.html', function (err, data) {
-                if (err) console.log(err);
-                res.writeHead(200, {'Content-Type': 'text/html'});
-                res.write(data);
-                res.end();
-            });
-        }
-        else if(req.url.indexOf('phaser.js') != -1){
-            fs.readFile(__dirname + '/www/js/phaser.js', function (err, data) {
-            if (err) console.log(err);
-            res.writeHead(200, {'Content-Type': 'text/javascript'});
-            res.write(data);
-            res.end();
-            });
-        }
-        else if(req.url.indexOf('socket.io.js') != -1){
-            fs.readFile(__dirname + '/www/js/socket.io.js', function (err, data) {
-            if (err) console.log(err);
-            res.writeHead(200, {'Content-Type': 'text/javascript'});
-            res.write(data);
-            res.end();
-            });
-    
-        }
-        else if(req.url.indexOf('game.js') != -1){
-            fs.readFile(__dirname + '/www/js/game.js', function (err, data) {
-            if (err) console.log(err);
-            res.writeHead(200, {'Content-Type': 'text/javascript'});
-            res.write(data);
-            res.end();
-            });    
-        }
-        else if(req.url.indexOf('test.js') != -1){ 
-            fs.readFile(__dirname + '/www/js/test.js', function (err, data) {
-            if (err) console.log(err);
-            res.writeHead(200, {'Content-Type': 'text/javascript'});
-            res.write(data);
-            res.end();
-            });
-        }
-        else if(req.url.indexOf('js/modernizr-2.6.2.min.js') != -1){ 
-            fs.readFile(__dirname + '/js/modernizr-2.6.2.min.js', function (err, data) {
-            if (err) console.log(err);
-            res.writeHead(200, {'Content-Type': 'text/javascript'});
-            res.write(data);
-            res.end();
-            });
-        }
-        else if(req.url.indexOf('js/jquery.min.js') != -1){ 
-            fs.readFile(__dirname + '/js/jquery.min.js', function (err, data) {
-            if (err) console.log(err);
-            res.writeHead(200, {'Content-Type': 'text/javascript'});
-            res.write(data);
-            res.end();
-            });
-        }
-        else if(req.url.indexOf('js/jquery.easing.1.3.js') != -1){ 
-            fs.readFile(__dirname + '/js/jquery.easing.1.3.js', function (err, data) {
-            if (err) console.log(err);
-            res.writeHead(200, {'Content-Type': 'text/javascript'});
-            res.write(data);
-            res.end();
-            });
-        }
-        else if(req.url.indexOf('js/bootstrap.min.js') != -1){ 
-            fs.readFile(__dirname + '/js/bootstrap.min.js', function (err, data) {
-            if (err) console.log(err);
-            res.writeHead(200, {'Content-Type': 'text/javascript'});
-            res.write(data);
-            res.end();
-            });
-        }
-        else if(req.url.indexOf('js/jquery.waypoints.min.js') != -1){ 
-            fs.readFile(__dirname + '/js/jquery.waypoints.min.js', function (err, data) {
-            if (err) console.log(err);
-            res.writeHead(200, {'Content-Type': 'text/javascript'});
-            res.write(data);
-            res.end();
-            });
-        }
-        else if(req.url.indexOf('js/main.js') != -1){ 
-            fs.readFile(__dirname + '/js/main.js', function (err, data) {
-            if (err) console.log(err);
-            res.writeHead(200, {'Content-Type': 'text/javascript'});
-            res.write(data);
-            res.end();
-            });
-        }
-        else if(req.url.indexOf('sfondoWeb2.png') != -1){ 
+      });
+      break;
+    }
+    case 'dataUser': {
+      var query = `SELECT nickname, level, exp FROM players WHERE BINARY nickname='${data.nickname}'`;
 
-            fs.readFile(__dirname + '/images/sfondoWeb2.png', function (err, data) {
-            if (err) console.log(err);
-            res.writeHead(200, {'Content-Type': 'text/html'});
-            res.write(data);
-            res.end();
-            });
-    
+      connectDB(query, queryDB).then((result) => {
+        if (result.error != null || result.data.length === 0) {
+          sendMessage({event: 'redirect', nickname: params.nickname,  data: {path: '/errorPage.html', message: `PAGINA NON TROVATA!`}});
+        } else {
+          sendMessage({event: 'dataUser', nickname: data.nickname, data: result.data[0]});
         }
-        else if(req.url.indexOf('Sfondo_.png') != -1){ 
+      });
+      break;
+    }
+    case 'registrationUser': {
+      var query = `INSERT INTO players(Nickname, Password) VALUES ('${params.nickname}', '${params.password}')`;
 
-            fs.readFile(__dirname + '/www/img/Sfondo_.png', function (err, data) {
-            if (err) console.log(err);
-            res.writeHead(200, {'Content-Type': 'text/html'});
-            res.write(data);
-            res.end();
-            });
+      connectDB(query, queryDB).then((result) => {
+        if (result.error != null || result.data.length === 0) {
+          sendMessage({event: 'endSocket', nickname: params.nickname, data: {path: '/errorPage.html', message: `Account gia' esistente!`}});
+        } else {
+          sendMessage({event: 'endSocket', nickname: params.nickname, data: {path: '/errorPage.html', message: `Registrazione effettuata!`}});
         }
-        else if(req.url.indexOf('lineRed.png') != -1){ 
-
-            fs.readFile(__dirname + '/www/img/lineRed.png', function (err, data) {
-            if (err) console.log(err);
-            res.writeHead(200, {'Content-Type': 'text/html'});
-            res.write(data);
-            res.end();
-            });
-        }
-        else if(req.url.indexOf('lineRedsmall.png') != -1){ 
-
-            fs.readFile(__dirname + '/www/img/lineRedSmall.png', function (err, data) {
-            if (err) console.log(err);
-            res.writeHead(200, {'Content-Type': 'text/html'});
-            res.write(data);
-            res.end();
-            });
-        }
-        else if(req.url.indexOf('lineGreen.png') != -1){ 
-
-            fs.readFile(__dirname + '/www/img/lineGreen.png', function (err, data) {
-            if (err) console.log(err);
-            res.writeHead(200, {'Content-Type': 'text/html'});
-            res.write(data);
-            res.end();
-            });
-        }
-        else if(req.url.indexOf('lineGreenSmall.png') != -1){ 
-
-            fs.readFile(__dirname + '/www/img/lineGreenSmall.png', function (err, data) {
-            if (err) console.log(err);
-            res.writeHead(200, {'Content-Type': 'text/html'});
-            res.write(data);
-            res.end();
-            });
-        }
-        else if(req.url.indexOf('lineYellow.png') != -1){ 
-
-            fs.readFile(__dirname + '/www/img/lineYellow.png', function (err, data) {
-            if (err) console.log(err);
-            res.writeHead(200, {'Content-Type': 'text/html'});
-            res.write(data);
-            res.end();
-            });
-        }
-        else if(req.url.indexOf('lineYellowSmall.png') != -1){ 
-
-            fs.readFile(__dirname + '/www/img/lineYellowSmall.png', function (err, data) {
-            if (err) console.log(err);
-            res.writeHead(200, {'Content-Type': 'text/html'});
-            res.write(data);
-            res.end();
-            });
-        }
-        else if(req.url.indexOf('lineBlue.png') != -1){ 
-
-            fs.readFile(__dirname + '/www/img/lineBlue.png', function (err, data) {
-            if (err) console.log(err);
-            res.writeHead(200, {'Content-Type': 'text/html'});
-            res.write(data);
-            res.end();
-            });
-        }
-        else if(req.url.indexOf('lineBlueSmall.png') != -1){ 
-
-            fs.readFile(__dirname + '/www/img/lineBlueSmall.png', function (err, data) {
-            if (err) console.log(err);
-            res.writeHead(200, {'Content-Type': 'text/html'});
-            res.write(data);
-            res.end();
-            });
-        }
-        else if(req.url.indexOf('lineCyan.png') != -1){ 
-
-            fs.readFile(__dirname + '/www/img/lineCyan.png', function (err, data) {
-            if (err) console.log(err);
-            res.writeHead(200, {'Content-Type': 'text/html'});
-            res.write(data);
-            res.end();
-            });
-        }
-        else if(req.url.indexOf('lineCyanSmall.png') != -1){ 
-
-            fs.readFile(__dirname + '/www/img/lineCyanSmall.png', function (err, data) {
-            if (err) console.log(err);
-            res.writeHead(200, {'Content-Type': 'text/html'});
-            res.write(data);
-            res.end();
-            });
-        }
-        else if(req.url.indexOf('porta.png') != -1){ 
-
-            fs.readFile(__dirname + '/www/img/porta.png', function (err, data) {
-            if (err) console.log(err);
-            res.writeHead(200, {'Content-Type': 'text/html'});
-            res.write(data);
-            res.end();
-            });
-        }
-        else if(req.url.indexOf('striker.png') != -1){
-            fs.readFile(__dirname + '/www/img/striker.png', function (err, data) {
-            if (err) console.log(err);
-            res.writeHead(200, {'Content-Type': 'text/html'});
-            res.write(data);
-            res.end();
-            });
-        }
-        else if(req.url.indexOf('puck.png') != -1){ 
-            fs.readFile(__dirname + '/www/img/puck.png', function (err, data) {
-            if (err) console.log(err);
-            res.writeHead(200, {'Content-Type': 'text/html'});
-            res.write(data);
-            res.end();
-            });
-        }
-        else if(req.url.indexOf('img_bg_1.jpg') != -1){ 
-            fs.readFile(__dirname + '/images/img_bg_1.jpg', function (err, data) {
-            if (err) console.log(err);
-            res.writeHead(200, {'Content-Type': 'text/html'});
-            res.write(data);
-            res.end();
-            });
-        }
-        else if(req.url.indexOf('img_bg_2.jpg') != -1){ 
-            fs.readFile(__dirname + '/images/img_bg_2.jpg', function (err, data) {
-            if (err) console.log(err);
-            res.writeHead(200, {'Content-Type': 'text/html'});
-            res.write(data);
-            res.end();
-            });
-        }
-        else if(req.url.indexOf('loader.gif') != -1){ 
-            fs.readFile(__dirname + '/images/loader.gif', function (err, data) {
-            if (err) console.log(err);
-            res.writeHead(200, {'Content-Type': 'text/html'});
-            res.write(data);
-            res.end();
-            });
-        }
-        else if(req.url.indexOf('loc.png') != -1){ 
-            fs.readFile(__dirname + '/images/loc.png', function (err, data) {
-            if (err) console.log(err);
-            res.writeHead(200, {'Content-Type': 'text/html'});
-            res.write(data);
-            res.end();
-            });
-        }
-        else if(req.url.indexOf('person1.jpg') != -1){ 
-            fs.readFile(__dirname + '/images/person1.jpg', function (err, data) {
-            if (err) console.log(err);
-            res.writeHead(200, {'Content-Type': 'text/html'});
-            res.write(data);
-            res.end();
-            });
-        }
-        else if(req.url.indexOf('work-1.jpg') != -1){ 
-            fs.readFile(__dirname + '/images/work-1.jpg', function (err, data) {
-            if (err) console.log(err);
-            res.writeHead(200, {'Content-Type': 'text/html'});
-            res.write(data);
-            res.end();
-            });
-        }
-        else if(req.url.indexOf('work-2.jpg') != -1){ 
-            fs.readFile(__dirname + '/images/work-2.jpg', function (err, data) {
-            if (err) console.log(err);
-            res.writeHead(200, {'Content-Type': 'text/html'});
-            res.write(data);
-            res.end();
-            });
-        }
-        else if(req.url.indexOf('work-3.jpg') != -1){ 
-            fs.readFile(__dirname + '/images/work-3.jpg', function (err, data) {
-            if (err) console.log(err);
-            res.writeHead(200, {'Content-Type': 'text/html'});
-            res.write(data);
-            res.end();
-            });
-        }
-        else if(req.url.indexOf('work-4.jpg') != -1){ 
-            fs.readFile(__dirname + '/images/work-4.jpg', function (err, data) {
-            if (err) console.log(err);
-            res.writeHead(200, {'Content-Type': 'text/html'});
-            res.write(data);
-            res.end();
-            });
-        }
-        else if(req.url.indexOf('work-5.jpg') != -1){ 
-            fs.readFile(__dirname + '/images/work-5.jpg', function (err, data) {
-            if (err) console.log(err);
-            res.writeHead(200, {'Content-Type': 'text/html'});
-            res.write(data);
-            res.end();
-            });
-        }
-        else if(req.url.indexOf('work-6.jpg') != -1){ 
-            fs.readFile(__dirname + '/images/work-6.jpg', function (err, data) {
-            if (err) console.log(err);
-            res.writeHead(200, {'Content-Type': 'text/html'});
-            res.write(data);
-            res.end();
-            });
+      });
+      break;
+    }
+    case 'cancelGameWaiting': {
+      var room = findRoomWithNickname(data.nickname);
+      sendMessage({event: 'eraseRoom', nickname: data.nickname});
+      deleteRoom(room);
+      break;
+    }
+    case 'cancelGameLoading': {
+      var room = findRoomWithNickname(data.nickname);
+      var rival = findRivalNickname(room, data.nickname);
+      sendMessage({event: 'eraseRoom', nickname: rival});
+      deleteRoom(room);
+      break;
+    }
+    case 'requestStartGame': {
+      var room = findRoomWithNickname(data.nickname);
+      sendServerGame(room, data);
+      break;
+    }
+    case 'puckPosition': {
+      var room = findRoomWithNickname(data.nickname);
+      sendServerGame(room, data);
+      break;
+    }
+    case 'moveMyPosition': {
+      var room = findRoomWithNickname(data.nickname);
+      sendServerGame(room, data);
+      break;
+    }
+    case 'goalSuffered': {
+      var room = findRoomWithNickname(data.nickname);
+      sendServerGame(room, data);
+      break;
+    }
+    case 'matchReport': {
+      var room = findRoomWithNickname(data.nickname);
+      var query = `SELECT level, exp FROM players WHERE BINARY nickname='${data.nickname}'`;
+      if(room) {
+        room.countReport += 1;
+        var report = {};
+        if(room.winner == data.nickname) {
+          report.expGained = expWinner;
+          report.status = 'vinto';
+        } else {
+          report.expGained = expLoser;
+          report.status = 'perso';
         }
 
-
-
-        else if(req.url.indexOf('glyphicons-halflings-regular.eot') != -1){
-            fs.readFile(__dirname + '/fonts/bootstrap/glyphicons-halflings-regular.eot', function (err, data) {
-                if (err) console.log(err);
-                res.writeHead(200, {'Content-Type': 'text/html'});
-                res.write(data);
-                res.end();
-            });
-        }
-        else if(req.url.indexOf('glyphicons-halflings-regular.svg') != -1){
-            fs.readFile(__dirname + '/fonts/bootstrap//glyphicons-halflings-regular.svg', function (err, data) {
-                if (err) console.log(err);
-                res.writeHead(200, {'Content-Type': 'text/html'});
-                res.write(data);
-                res.end();
-            });
-        }
-        else if(req.url.indexOf('glyphicons-halflings-regular.ttf') != -1){
-            fs.readFile(__dirname + '/fonts/bootstrap/glyphicons-halflings-regular.ttf', function (err, data) {
-                if (err) console.log(err);
-                res.writeHead(200, {'Content-Type': 'text/html'});
-                res.write(data);
-                res.end();
-            });
-        }
-        else if(req.url.indexOf('glyphicons-halflings-regular.woff') != -1){
-            fs.readFile(__dirname + '/fonts/bootstrap/glyphicons-halflings-regular.woff', function (err, data) {
-                if (err) console.log(err);
-                res.writeHead(200, {'Content-Type': 'text/html'});
-                res.write(data);
-                res.end();
-            });
-        }
-        else if(req.url.indexOf('glyphicons-halflings-regular.woff2') != -1){
-            fs.readFile(__dirname + '/fonts/bootstrap/glyphicons-halflings-regular.woff2', function (err, data) {
-                if (err) console.log(err);
-                res.writeHead(200, {'Content-Type': 'text/html'});
-                res.write(data);
-                res.end();
-            });
-        }
-
-        else if(req.url.indexOf('icomoon.eot') != -1){
-            fs.readFile(__dirname + '/fonts/icomoon/icomoon.eot', function (err, data) {
-                if (err) console.log(err);
-                res.writeHead(200, {'Content-Type': 'text/html'});
-                res.write(data);
-                res.end();
-            });
-        }
-        else if(req.url.indexOf('icomoon.svg') != -1){
-            fs.readFile(__dirname + '/fonts/icomoon/icomoon.svg', function (err, data) {
-                if (err) console.log(err);
-                res.writeHead(200, {'Content-Type': 'text/html'});
-                res.write(data);
-                res.end();
-            });
-        }
-        else if(req.url.indexOf('icomoon.ttf') != -1){
-            fs.readFile(__dirname + '/fonts/icomoon/icomoon.ttf', function (err, data) {
-                if (err) console.log(err);
-                res.writeHead(200, {'Content-Type': 'text/html'});
-                res.write(data);
-                res.end();
-            });
-        }
-        else if(req.url.indexOf('icomoon.woff') != -1){
-            fs.readFile(__dirname + '/fonts/icomoon/icomoon.woff', function (err, data) {
-                if (err) console.log(err);
-                res.writeHead(200, {'Content-Type': 'text/html'});
-                res.write(data);
-                res.end();
-            });
-        }
-
-
-        /*
-        else if(req.url.indexOf('prova.css') != -1){
-            fs.readFile(__dirname + './prova.css', function (err, data) {
-                if (err) console.log(err);
-                res.writeHead(200, {'Content-Type': 'text/css'});
-                res.write(data);
-                res.end();
-            });
-        } */
-        else if(req.url.indexOf('css/animate.css') != -1){
-            fs.readFile(__dirname + '/css/animate.css', function (err, data) {
-                if (err) console.log(err);
-                res.writeHead(200, {'Content-Type': 'text/css'});
-                res.write(data);
-                res.end();
-            });
-        }
-
-        else if(req.url.indexOf('css/icomoon.css') != -1){
-            fs.readFile(__dirname + '/css/icomoon.css', function (err, data) {
-                if (err) console.log(err);
-                res.writeHead(200, {'Content-Type': 'text/css'});
-                res.write(data);
-                res.end();
-            });
-        }
-        else if(req.url.indexOf('css/bootstrap.css') != -1){
-            fs.readFile(__dirname + '/css/bootstrap.css', function (err, data) {
-                if (err) console.log(err);
-                res.writeHead(200, {'Content-Type': 'text/css'});
-                res.write(data);
-                res.end();
-            });
-        }
-        else if(req.url.indexOf('css/style.css') != -1){
-            fs.readFile(__dirname + '/css/style.css', function (err, data) {
-                if (err) console.log(err);
-                res.writeHead(200, {'Content-Type': 'text/css'});
-                res.write(data);
-                res.end();
-            });
-        }
-        else if(req.url.indexOf('style.css') != -1){ 
-            fs.readFile(__dirname + '/www/css/style.css', function (err, data) {
-                if (err) console.log(err);
-                res.writeHead(200, {'Content-Type': 'text/css'});
-                res.write(data);
-                res.end();
-            });
-        }
-        else if(req.url.indexOf('bootstrap.min.css') != -1){ 
-            fs.readFile(__dirname + '/www/bootstrap/css/bootstrap.min.css', function (err, data) {
-                if (err) console.log(err);
-                res.writeHead(200, {'Content-Type': 'text/css'});
-                res.write(data);
-                res.end();
-            });
-        }
-        else{
-            res.writeHead(200, { "Content-Type": "text/html" });
-            fs.createReadStream("./index.html", "UTF-8").pipe(res);
-        }
-    } 
-    else if (req.method == "POST") {
-        
-        let body = '';
-        req.on('data', chunk => {
-            body += chunk.toString(); // convert Buffer to string
-        });
-        req.on('end', () => {
-            // Split dei dati ricavati dalla richiesta di tipo POST
-            var contenitore = [];
-            contenitore=body.split("&");
-            contenitore=contenitore.toString();
-            contenitore = contenitore.replace(",", "=")
-            contenitore=contenitore.split("=");
-            
-
-            for(var i=0;i<contenitore.length;i=i+2){
-                
-                if(contenitore[i]=="Registration"){
-                    /* Re-Indirizzamento form registrazione */
-                    console.log("Re-Indirizzamento");
-                    res.writeHead(200, { "Content-Type": "text/html" });
-                    fs.createReadStream("./Registration.html", "UTF-8").pipe(res);
-                }
-                else if(contenitore[i]=="btnMainGame"){
-                    console.log("Ritorno sulla pagina MainGame...!->",contenitore);
-                    
-                    var con = mysql.createConnection({
-                        host: "127.0.0.1",
-                        user: "root",
-                        password: "",
-                        database: "dbgiocohockey"
-                    });
-                    if(con) {}
-                    else{
-                        console.log("Connessione Fallita!\nImpossibile effettuare l'accesso per la registrazione!")
-                    }
-
-                    con.connect(function(err) {
-                        if (err) throw err;
-                        var usr = contenitore[1];
-                        con.query("SELECT EXP FROM giocatore WHERE Nickname='"+usr+"'", function (err, result, fields) {
-                            if (err) throw err;
-                            else{
-                                var userRoomPlay = getNickUsers();
-                                    
-                                if(result==''){
-
-                                    res.setHeader('Set-Cookie', ['room1='+room[0]+'','room2='+room[1]+'','room3='+room[2]+'','room4='+room[3]+'','namePlayer='+userRoomPlay+'']);
-                                    res.writeHead(200, { "Content-Type": "text/html" });
-                                    fs.createReadStream("./mainGame.html", "UTF-8").pipe(res);
-                                }
-                                else{
-                                    res.setHeader('Set-Cookie', ['ex='+result[0].EXP+'','esp_prev='+result[0].EXP+'','room1='+room[0]+'','room2='+room[1]+'','room3='+room[2]+'','room4='+room[3]+'','namePlayer='+userRoomPlay+'']);
-
-                                    res.writeHead(200, { "Content-Type": "text/html" });
-                                    fs.createReadStream("./mainGame.html", "UTF-8").pipe(res);     
-                                }
-                            }
-                        });
-                        con.on('error', function(err) {
-                            console.log("[mysql error]",err);
-                          });
-                    })               
-                
-                }
-                else if(contenitore[i]=="RegUsername"){
-                    /* ZONA QUERY SQL REGISTRATION */
-                    console.log("Registrazione");
-
-                    var con = mysql.createConnection({
-                        host: "127.0.0.1",
-                        user: "root",
-                        password: "",
-                        database: "dbgiocohockey"
-                    });
-                    if(con) {}
-                    else{
-                        console.log("Connessione Fallita!\nImpossibile effettuare la registrazione!")
-                    }
-
-                    con.connect(function(err) {
-                        if (err) throw err;
-                        var usr = contenitore[1];
-                        var psw = contenitore[3];
-                        con.query("INSERT INTO giocatore(Nickname, Password, Livello, EXP) VALUES ('"+usr+"','"+psw+"','0','0')", function (err, result, fields) {
-                        
-                            if(err){
-                                console.log("REGISTRAZIONE FALLITA!");
-                                fs.readFile(__dirname + '/registrationFalse.html', function (err, data) {
-                                    if (err) console.log(err);
-                                    res.writeHead(200, {'Content-Type': 'text/html'});
-                                    res.write(data);
-                                    res.end();
-                                });
-                            }
-                            else{
-                                console.log("REGISTRAZIONE EFFETTUATA!");
-                                fs.readFile(__dirname + '/registrationTrue.html', function (err, data) {
-                                    if (err) console.log(err);
-                                    res.writeHead(200, {'Content-Type': 'text/html'});
-                                    res.write(data);
-                                    res.end();
-                                });
-                            }
-                        });
-                    })
-                    
-                }
-                else if(contenitore[i]=="LoginUsr"){
-                    /* ZONA QUERY SQL LOGIN */
-                    
-                    var con = mysql.createConnection({
-                        host: "127.0.0.1",
-                        user: "root",
-                        password: "",
-                        database: "dbgiocohockey"
-                    });
-                    if(con) {}
-                    else{
-                        console.log("Connessione Fallita!\nImpossibile accedere al database per la Login!")
-                    }
-
-                    con.connect(function(err) {
-                        if (err) throw err;
-                        var usr = contenitore[1];
-                        var psw = contenitore[3];
-                        con.query("SELECT Nickname,Password,Livello,EXP FROM giocatore WHERE Nickname='"+usr+"' AND Password='"+psw+"'", function (err, result, fields) {
-                            if (err) throw err;
-                            else{
-                                if(result==''){
-                                    fs.readFile(__dirname + '/loginError.html', function (err, data) {
-                                        if (err) console.log(err);
-                                        res.writeHead(200, {'Content-Type': 'text/html'});
-                                        res.write(data);
-                                        res.end();
-                                    }); 
-                                }
-                                else{
-                                    console.log("ACCESSO EFFETTUATO DA:",usr);
-                                    
-                                    usersConnected[usersConnected.length] = usr;
-
-                                    var userRoomPlay = getNickUsers();
-
-                                    res.setHeader('Set-Cookie', ['nick='+result[0].Nickname+'', 'liv='+result[0].Livello+'', 'ex='+result[0].EXP+'','esp_prev='+result[0].EXP+'','room1='+room[0]+'','room2='+room[1]+'','room3='+room[2]+'','room4='+room[3]+'','namePlayer='+userRoomPlay+'']);
-                                    res.writeHead(200, { "Content-Type": "text/html" });
-                                    fs.createReadStream("./mainGame.html", "UTF-8").pipe(res);
-                                }
-                                
-                            }
-                        });
-                        con.on('error', function(err) {
-                            console.log("[mysql error]",err);
-                          });
-                    })
-                }
-                else if(contenitore[i]=="PlayGame"){
-                    /* Re-Indirizzamento form StartGame */
-                    
-                    if( (contenitore[2]=="1" && room[0]==false) ||
-                        (contenitore[2]=="2" && room[1]==false) ||
-                        (contenitore[2]=="3" && room[2]==false) ||
-                        (contenitore[2]=="4" && room[3]==false) ||
-                        (contenitore[2]=="random" && (room[0]==false || room[1]==false || room[2]==false || room[3]==false))){
-                        // Scelta stanza(partita)
-                        res.setHeader('Set-Cookie', ['selectRoom='+contenitore[2]+'']);
-                        res.writeHead(200, { "Content-Type": "text/html" });
-                        fs.createReadStream("./startGame.html", "UTF-8").pipe(res);
-                    }
-                    else{
-                        // Caso nel quale le stanze/stanza selezionate/selezionata sono/e' occupate/a
-                        
-                        var userRoomPlay = getNickUsers();
-                        console.log("RIS FINALE-> ",userRoomPlay);
-                        res.setHeader('Set-Cookie', ['room1='+room[0]+'','room2='+room[1]+'','room3='+room[2]+'','room4='+room[3]+'','namePlayer='+userRoomPlay+'']);
-                        res.writeHead(200, { "Content-Type": "text/html" });
-                        fs.createReadStream("./mainGame.html", "UTF-8").pipe(res);
-                    }                    
-                }
-                else if(contenitore[i]=="ENDGame"){
-                    /* Evento fine partita */
-                    var ris="perso";
-                    var nick=contenitore[2];
-                    var liv;
-                    var exp;
-
-                    for(var j=0;j<finalDataUsers.length;j++){
-                        if(finalDataUsers[j]!=0 && (finalDataUsers[j].nick1==nick || finalDataUsers[j].nick2==nick)){
-                            if(finalDataUsers[j].winner==nick){
-                                ris="vinto";
-                                break;
-                            }
-                        }
-                    }
-
-                    var con = mysql.createConnection({
-                        host: "127.0.0.1",
-                        user: "root",
-                        password: "",
-                        database: "dbgiocohockey"
-                    });
-                    if(con) {}
-                    else{
-                        console.log("Connessione Fallita!\nImpossibile prelevare i dati del giocatore a fine partita!")
-                    }
-                    con.query("SELECT Livello,EXP FROM giocatore WHERE Nickname='"+nick+"'", function (err, result, fields) {
-                    if (err) throw err;
-                    else{
-                        if(result=='') {}        
-                        else{
-                            liv=result[0].Livello;
-                            exp=result[0].EXP;
-                            
-                            res.setHeader('Set-Cookie', ['result='+ris+'','liv='+liv+'','ex='+exp+'']);
-                            res.writeHead(200, { "Content-Type": "text/html" });
-                            fs.createReadStream("./ENDGame.html", "UTF-8").pipe(res);
-                        }
-                    }
-                    });
-                    con.on('error', function(err) {
-                        console.log("[mysql error]",err);
-                    });
-                      
-                }
-                
-            }
+        connectDB(query, queryDB).then((result) => {
+          if (result.error != null || result.data.length === 0) {
+            sendMessage({event: 'redirect', nickname: data.nickname,  data: {path: '/errorPage.html', message: `PAGINA NON TROVATA!`}});
+          } else {
+            sendMessage({event: 'matchReport', nickname: data.nickname, data: { dataUser: result.data[0], report}});
+          }
         });
 
+        if(room.countReport == 2) {
+          deleteRoom(room);
+        }
+      }
+      break;
     }
+    case 'quickGame': {
+      var room = findFreeRoom();
+      if(room) {
+        prepareGame(room, data.nickname);
+      } else {
+        sendMessage({event: 'notFoundRoom', nickname: data.nickname});
+      }
+      break;
+    }
+    case 'exitPlayer': {
+      var room = endGame(data);
+      sendMessage({event: 'redirect', nickname: room.nickname1, data: {path: '/finishGame.html'}});
+      sendMessage({event: 'redirect', nickname: room.nickname2, data: {path: '/finishGame.html'}});
+      break;
+    }
+    case 'quitPlayer': {
+      var room = endGame(data);
+      room.countReport++;
+      sendMessage({event: 'redirect', nickname: room.winner, data: {path: '/finishGame.html'}});
+      break;
+    }
+  }
+}
 
-}).listen(port);
+function endGame(data) {
+  var room = findRoomWithNickname(data.nickname);
+  room.winner = findRivalNickname(room, data.nickname);
+  room.loser = data.nickname;
+  connectDB({winner: room.winner, loser: room.loser}, updateStatPlayers);
+  room.instance.kill('SIGINT');
+  return room;
+}
+
+function updateStatPlayers(con, data) {
+  saveDataDB(data.winner, expWinner);
+  saveDataDB(data.loser, expLoser);
+}
+
+function messageServerGame(room) {
+  room.instance.on('message', (data) => {
+    switch (data.event) {
+      case 'startGame' : {
+        sendMessage({event: 'redirect', nickname: data.nickname, data: {path: '/startGame.html', key: data.nickname}});
+        break;
+      }
+      case 'puckPosition': {
+        sendMessage(data);
+        break;
+      }
+      case 'rivalData': {
+        sendMessage(data);
+        break;
+      }
+      case 'myPosition': {
+        sendMessage(data);
+        break;
+      }
+      case 'launchGame': {
+        sendMessage(data);
+        break;
+      }
+      case 'moveRivalPosition': {
+        sendMessage(data);
+        break;
+      }
+      case 'refreshScoreGame': {
+        sendMessage(data);
+        break;
+      }
+      case 'finishGame': {
+        sendMessage(data);
+        break;
+      }
+      case 'updateDataDB': {
+        connectDB(data, updateStatPlayers);
+        break;
+      }
+      case 'setPuckPosition': {
+        sendMessage(data);
+        break;
+      }
+      case 'continueGame': {
+        sendMessage(data);
+        break;
+      }
+      case 'stopServerGame': {
+        var room = findRoomWithNickname(data.nickname);
+        room.winner = data.result.winner;
+        room.loser = data.result.loser;
+        room.instance.kill('SIGINT');
+
+        sendMessage({event: 'redirect', nickname: room.nickname1, data: {path: '/finishGame.html'}});
+        sendMessage({event: 'redirect', nickname: room.nickname2, data: {path: '/finishGame.html'}});
+        break;
+      }
+    }
+  });
+}
+
+socket.on('connection', (client) => {
+  console.log('socketServer: Qualcuno ha mandato un messaggio sulla socket.');
+
+  client.on('updateSocket', (nickname) => {
+      var index = findSocketIndex(nickname);
+      if (index == null || index == undefined) {
+          client.emit('redirect', {path: '/errorPage.html', message: `PAGINA NON TROVATA!`});
+      } else {
+          usersSocket[index].socket = client;
+          client.emit('updateSocket');
+      }
+  });
+
+  client.on('dataUser', () => {
+      eventMessage({event:'dataUser', nickname: findNickname(client)});
+  });
+
+  client.on('getRooms', () => {
+      eventMessage({event:'getRooms', nickname: findNickname(client)});
+  });
+
+  client.on('joinIntoRoom', (data) => {
+      eventMessage({event:'joinIntoRoom', nickname: findNickname(client), data: data.data});
+  });
+
+  client.on('createRoom', (data) => {
+      eventMessage({event:'createRoom', nickname: findNickname(client), data: data.data});
+  });
+
+  client.on('loginUser', (data) => {
+      var index = findSocketIndex(data.data.nickname);
+      if((index != null || index != undefined) && usersSocket[index].socket) {
+          usersSocket[index].socket.emit('redirect', {path: '/errorPage.html', message: `Qualcuno ha effettuato l'accesso al tuo account!`});
+          usersSocket.splice(index, 1);
+      }
+
+      var socketClient = {
+          socket : client,
+          nickname: data.data.nickname
+      }
+      usersSocket.push(socketClient);
+      eventMessage({event:'loginUser', data: data.data});
+  });
+  
+  client.on('registrationUser', (data) => {
+      var socketClient = {
+          socket : client,
+          nickname: data.data.nickname
+      }
+      usersSocket.push(socketClient);
+      eventMessage({event:'registrationUser', data: data.data});
+  });
+
+  client.on('logout', () => {
+      usersSocket.splice(findSocketIndex(findNickname(client)), 1);
+  });
+
+  client.on('cancelGameWaiting', () => {
+      eventMessage({event:'cancelGameWaiting', nickname: findNickname(client)});
+  });
+
+  client.on('cancelGameLoading', () => {
+      eventMessage({event:'cancelGameLoading', nickname: findNickname(client)});
+  });
+
+  client.on('requestStartGame', (data) =>{
+      eventMessage({event:'requestStartGame', nickname: findNickname(client)});
+  });
+
+  client.on('puckPosition', (data) => {
+      eventMessage({event:'puckPosition', nickname: findNickname(client), data: data.data});
+  });
+
+  client.on('moveMyPosition', (data) => {
+      eventMessage({event:'moveMyPosition', nickname: findNickname(client), data: data.data});
+  });
+
+  client.on('goalSuffered', () => {
+      eventMessage({event:'goalSuffered', nickname: findNickname(client)});
+  });
+
+  client.on('matchReport', () => {
+      eventMessage({event:'matchReport', nickname: findNickname(client)});
+  });
+
+  client.on('backToMain', () => {
+      client.emit('redirect', {path: '/mainGame.html'});
+  });
+
+  client.on('quickGame', () =>{
+      eventMessage({event:'quickGame', nickname: findNickname(client)});
+  });
+
+  client.on('exitPlayer', () =>{
+      eventMessage({event:'exitPlayer', nickname: findNickname(client)});
+  });
+
+  client.on('quitPlayer', () =>{
+      eventMessage({event:'quitPlayer', nickname: findNickname(client)});
+  });
+});
+
+function sendMessage(data) {
+  console.log('Messaggio mandato: \t',data);
+    var socketClient = getSocket(data.nickname);
+    if (socketClient) {
+      switch (data.event) {
+        case 'getRooms': {
+            socketClient.emit(data.event, data.data);
+            break;
+        }
+        case 'busyRoom': {
+            socketClient.emit(data.event);
+            break;
+        }
+        case 'passwordError': {
+            socketClient.emit(data.event);
+            break;
+        }
+        case 'updateRooms': {
+            socket.sockets.emit('getRooms', data.data);
+        }
+        case 'redirect': {
+            socketClient.emit(data.event, data.data);
+            break;
+        }
+        case 'endSocket': {
+            socketClient.emit('redirect', data.data);
+            usersSocket.splice(findSocketIndex(data.nickname), 1);
+            break;
+        }
+        case 'dataUser': {
+            socketClient.emit(data.event, data.data);
+            break;
+        }
+        case 'waitingPlayer': {
+            socketClient.emit(data.event);
+            break;
+        }
+        case 'waitingGame': {
+            socketClient.emit(data.event);
+            break;
+        }
+        case 'eraseRoom': {
+            socketClient.emit(data.event);
+            break;
+        }
+        case 'puckPosition': {
+            socketClient.emit(data.event,data.data);
+            break;
+        }
+        case 'rivalData': {
+            socketClient.emit(data.event,data.data);
+            break;
+        }
+        case 'myPosition': {
+            socketClient.emit(data.event,data.data);
+            break;
+        }
+        case 'launchGame': {
+            socketClient.emit(data.event);
+            break;
+        }
+        case 'moveRivalPosition': {
+            socketClient.emit(data.event,data.data);
+            break;
+        }
+        case 'refreshScoreGame': {
+            socketClient.emit(data.event,data.data);
+            break;
+        }
+        case 'finishGame': {
+            socketClient.emit(data.event,data.data);
+            break;
+        }
+        case 'setPuckPosition': {
+            socketClient.emit(data.event,data.data);
+            break;
+        }
+        case 'continueGame': {
+            socketClient.emit(data.event,data.data);
+            break;
+        }
+        case 'matchReport': {
+            socketClient.emit(data.event,data.data);
+            break;
+        }
+        case 'notFoundRoom': {
+            socketClient.emit(data.event);
+            break;
+        }
+      }
+    }
+}
+
+function queryDB(con, operation) {
+  var response = {
+    error: null,
+    data: null,
+  };
+  return new Promise((resolve) => {
+    con.query(operation, function (err, result) {
+      if (err) {
+        console.log(`Errore nell'esecuzione della query: ${err.sql},\ncode: ${err.code},\nsqlMessage: ${err.sqlMessage}`);
+        response.error = err;
+      } else {
+        console.log(`Risultato query : ${result}`);
+        response.data = result;
+      }
+      resolve(response);
+    });
+  });
+}
+
+function nextLevel(level){
+  return Math.round((4 * (Math.pow(level,3))) / 5)
+}
+
+function calculateLevel(player) {
+  var newLevel = player.level;
+  while (nextLevel(newLevel) < player.exp) {
+    newLevel++;
+  }
+  return newLevel;
+}
+
+function saveDataDB(user, score) {
+  var query = `SELECT nickname, level, exp FROM players WHERE BINARY nickname='${user}'`;
+
+  connectDB(query, queryDB).then((result) => {
+    if (result.error != null || result.data.length === 0) throw err;
+    else {
+      var newExp = result.data[0].exp + score;
+      var level = calculateLevel(result.data[0]);
+      var query2 = `UPDATE players SET level='${level}', exp='${newExp}' WHERE BINARY nickname='${user}'`;
+      connectDB(query2, queryDB);
+    }
+  });
+}
+
+function retriveType(url) {
+  if (url.includes('css')) {
+    return 'css';
+  }
+  else if (url.includes('js')) {
+    return 'javascript';
+  }
+  return 'html';
+}
+
+function checkIsRoot(url) {
+  return url == '/' ? '/index.html' : url;
+}
+
+function routePage(url, res) {
+  var path = __dirname + checkIsRoot(url) + '';
+  if (fs.existsSync(path) == false) {
+    path = __dirname + '/errorPage.html';
+    res.setHeader('Set-Cookie', 'message=PAGINA NON TROVATA!;');
+  }
+
+  fs.readFile(path, function (err, data) {
+    if (err) {
+      console.log(err);
+    } else {
+      res.writeHead(200, { 'Content-Type': 'text/' + retriveType(url) });
+      res.write(data);
+      res.end();
+    }
+  });
+}
+
+app.get(paths, function (req, res) {
+  routePage(req.url, res);
+});
+
+server.listen(8080, () => console.log("In ascolto sulla porta 8080..."));

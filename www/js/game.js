@@ -1,425 +1,368 @@
-var app = {};
-app.rival = {};
-app.start = false;
-app.posX;
-app.posY;
-app.rival.nickname;
-app.rival.posX;
-app.rival.posY;
-app.rival.score = 0;
+var app = {
+    ball : {
+        posX : null,
+        posY : null,
+        lastMovement : false
+    },
+    player : {
+        nickname : null,
+        posX : null,
+        posY : null,
+        idPorta : null,
+        score : 0
+    },
+    rival : {
+        nickname : null,
+        posX : null,
+        posY : null,
+        score : 0
+    },
+    system : {
+        defaultWidth: 800,
+        defaultHeight: 900,
+        fieldX: field.x,
+        fieldY: field.y,
+        fontPlayer: 15,
+        textEndGame : null,
+        textGol : null,
+        textScore : null,
+        stanza : null,
+        delayFinishGame : 3000,
+        finishGame : false,
+        continueGame : false,
+        refreshScore : false,
+        goal: false,
+        exitButton: null,
+        sendMessageQuit: false
+    }
+};
+var socket = io.connect('http://localhost:8080');
+
+// Oggetti grafici Phaser
 var puck;
-var textScore;
-var textGol;
-var textEndGame;
-app.idPorta;
-app.score = 0;
-app.bool = false;
-app.boolBall = false;
-app.posBallX;
-app.posBallY;
-app.nickname;
-app.puck = {};
-app.changePuck = false;
-app.timer = 3000;
-app.respawnPuck = false;
-app.finishGame = false;
-app.EnD = false;
-app.stanza;
-app.check = false;
-app.velocity=0;
-var socket = io('http://127.0.0.1:8081');
-app.force = 125;
-app.maxSpeed = 500;
-app.speedX = 0;
-app.speedY = 0;
-app.force = 125;
-calcAngle = (obj1,obj2) => {
-    var theta = Math.atan2((obj2.y-obj1.y),(obj2.x-obj1.x));
-    theta+=(Math.PI/2);
+var graphips;
+var strikerRival;
+var strikerPlayer;
+var border = [];
+var colorBorder = ['borderLeft','borderTop','borderRight','borderBottom'];
+var positionBorderX = [18,400,785,400];
+var positionBorderY = [450,10,450,890];
 
-    var angle = theta*(180/Math.PI);
-    angle+=Math.ceil((-angle)/360)*360;
-    return angle;
+function exitPlayer() {
+    socket.emit('exitPlayer');
 }
 
-calcSpeedX = (currentX) =>{
-    var movementX = Math.abs(currentX-app.posX);
-    app.speedX = ((app.force*movementX)>app.maxSpeed) ? app.maxSpeed : app.force*movementX; 
+function resetAction() {
+    app.system.goal = false;
+    app.system.continueGame = false;
+    app.ball.lastMovement = false;
 }
 
-calcSpeedY = (currentY) =>{
-    var movementY = Math.abs(currentY-app.posY);
-    app.speedY = ((app.force*movementY)>app.maxSpeed) ? app.maxSpeed : app.force*movementY;     
+function setCookie(nameParams, paramsValue) {
+    var d = new Date();
+    d.setTime(d.getTime() + (1*24*60*60*1000));
+    var expires = "expires="+ d.toUTCString();
+    document.cookie = nameParams + "=" + paramsValue + ";" + expires + ";";
 }
 
-function delayTime(spawn){
-    app.check=true;
-    setTimeout(function myTime(){
-        if(spawn == true){
-            app.respawnPuck=true;
-            
+socket.emit('updateSocket', $.cookie('key')).on('updateSocket', function() {
+    app.player.nickname = $.cookie('key');
+    socket.emit('requestStartGame');
+});
+
+socket.on('redirect', function(destination) {
+    app.system.sendMessageQuit = false;
+    var key = Object.keys(destination)[1];
+    var value = Object.values(destination);
+    if (key == 'key') {
+        setCookie(key, value[1]);
+    }
+    else if (key == 'message') {
+        setCookie(key, value[1]);
+    }
+    window.location.replace(value[0]);
+});
+
+socket.on('rivalData', (data) => {
+    app.rival.nickname = data.nickname;
+    app.rival.posX = proportionsX(data.position[0]);
+    app.rival.posY = proportionsY(data.position[1]);
+});
+
+socket.on('myPosition', (data) => {
+    app.player.posX = proportionsX(data[0]);
+    app.player.posY = proportionsY(data[1]);
+});
+
+socket.on('moveRivalPosition', (data) => {
+    app.rival.posX = proportionsX(data[0]);
+    app.rival.posY = proportionsY(data[1]);
+});
+
+socket.on('setPuckPosition', (data) => {
+    app.ball.posX = proportionsX(data[0]);
+    app.ball.posY = proportionsY(data[1]);
+});
+
+socket.on('continueGame', () => {
+    app.system.continueGame = true;
+});
+
+socket.on('puckPosition', (data) => {
+    app.ball.lastMovement=false;
+    app.ball.posX = proportionsX(data[0]);
+    app.ball.posY = proportionsY(data[1]);
+});
+
+socket.on('refreshScoreGame', (data) => {
+    app.player.score = data.scorePlayer;
+    app.rival.score = data.scoreRival;
+    app.system.refreshScore = true;
+});
+
+socket.on('launchGame', () => {    
+    console.log('Inizia la partita!');
+    begin();
+});
+
+window.addEventListener('beforeunload', function (e) {
+    if(app.system.sendMessageQuit){
+        socket.emit('quitPlayer');
+    }
+    return ''; 
+});
+
+socket.on('finishGame', () => {
+    app.system.finishGame = true;
+});
+
+function proportionsX(value) {
+    return (value*app.system.fieldX) / app.system.defaultWidth; 
+}
+
+function proportionsY(value) {
+    return (value*app.system.fieldY) / app.system.defaultHeight; 
+}
+
+function proportionsReverse(valueX, valueY) {
+    var resultX = (app.system.defaultWidth*valueX) / app.system.fieldX;
+    var resultY = (app.system.defaultHeight*valueY) / app.system.fieldY;
+    return [resultX, resultY];
+}
+
+function percentX(value) {
+    var result = (value*100) / app.system.defaultWidth;
+    if(result == 100) {
+        return '1.0';
+    }
+    return `.${parseInt(result)}`;
+}
+
+function percentY(value) {
+    var result = (value*100) / app.system.defaultHeight;
+    if(result == 100) {
+        return '1.0';
+    }
+    return `.${parseInt(result)}`;
+}
+
+function begin() {
+    var config = {
+        type: Phaser.AUTO,
+        width: app.system.fieldX,
+        height: app.system.fieldY,
+        parent: 'field',
+        dom: {
+            createContainer: true
+        },
+        physics: {
+            default: 'arcade',
+            arcade: {
+                debug: false
+            },
+        },
+        scene: {
+            preload: preload,
+            create: create,
+            update: update
+        }
+    }
+    new Phaser.Game(config);
+
+    // Funzione di caricamento delle immagini all'interno il gioco
+    function preload() {
+        this.load.image('background', "/www/img/Sfondo_.png");
+        this.load.image('borderLeft', "/www/img/borderLeft.png");
+        this.load.image('borderTop', "/www/img/borderTop.png");
+        this.load.image('borderRight', "/www/img/borderRight.png");
+        this.load.image('borderBottom', "/www/img/borderBottom.png");
+
+        this.load.image('strikerRival',"/www/img/striker.png");
+        this.load.image('strikerPlayer',"/www/img/striker.png");
+        this.load.image('puck',"/www/img/puck.png");
+    }
+
+    function create() {
+        // Settiamo lo sfondo del gioco
+        this.image = this.add.image(app.system.fieldX * 0.5, app.system.fieldY * 0.5,'background');
+        this.image.scaleX = percentX(app.system.fieldX);
+        this.image.scaleY = percentY(app.system.fieldY);
+
+        // Creazione dei bordi
+        for(var i=0; i<4; i++) {
+            border[i] = this.physics.add.sprite(proportionsX(positionBorderX[i]), proportionsY(positionBorderY[i]), colorBorder[i]);
+            border[i].scaleX = percentX(app.system.fieldX);
+            border[i].scaleY = percentY(app.system.fieldY);
+
+            border[i].setDataEnabled();
+            border[i].name = colorBorder[i];
+            border[i].data.set('number',i);
+            border[i].setImmovable();
+        }
+
+        app.system.textGol = this.add.text(proportionsX(290), proportionsY(410), 'Goal!', { font: `${proportionsX(75)}px Courier`, fill: '#000000' });
+        app.system.textGol.setVisible(false);
+        app.system.textEndGame = this.add.text(proportionsX(135), proportionsY(410), 'Finish game!', { font: `${proportionsX(75)}px Courier`, fill: '#000000' });
+        app.system.textEndGame.setVisible(false);
+
+        app.system.textScore = this.add.text(proportionsX(5), proportionsY(498), (app.player.score+' - '+app.rival.score), { font: `${proportionsX(32)}px Courier`, fill: '#000000' });
+        app.system.textScore.angle = -90;
+
+        var button = document.createElement('button')
+        button.style = `background-color: white; border-radius: 15px; outline:none; width: ${proportionsX(25)}px; padding: 0.5%; text-align: center; font: ${proportionsY(13)}px Comic Sans MS; color: black; text-transform: uppercase; word-wrap: break-word`;
+        button.innerText = 'ABBANDONA';
+        button.onclick = () => exitPlayer();
+        app.system.exitButton = this.add.dom(proportionsX(782), proportionsY(450), button)
+
+        // Inizializzazione Striker1
+        strikerRival = this.physics.add.sprite(app.rival.posX, app.rival.posY,'strikerRival');
+        strikerRival.scaleX = percentX(app.system.fieldX);
+        strikerRival.scaleY = percentY(app.system.fieldY);
+        strikerRival.body.setCircle(40);
+
+        var div = document.createElement('div');
+        div.style = `background-color: rgb(253, 175, 31); border-radius: 15px; height: ${proportionsY(30)}px; padding: 0.5% 1%; font: ${proportionsY(app.system.fontPlayer)}px Comic Sans MS; color: white; text-transform: uppercase`;
+        div.innerText = app.rival.nickname;
+        strikerRival.label = this.add.dom(app.rival.posX, Math.floor(app.rival.posY - proportionsY(60)), div);
+
+        // Qui inizializziamo Striker2 e lo rendiamo trascinabile
+        strikerPlayer = this.physics.add.sprite(app.player.posX, app.player.posY, 'strikerPlayer').setInteractive({ draggable: true});
+        strikerPlayer.scaleX = percentX(app.system.fieldX);
+        strikerPlayer.scaleY = percentY(app.system.fieldY);
+        strikerPlayer.body.setCircle(40);
+        strikerPlayer.body.setBounce(1,1);
+
+        // Tramite questa funzione è possibile trascinare lo striker con il cursore
+        strikerPlayer.on('drag', function(pointer, dragX, dragY) {
+
+            if(dragY> proportionsY(490) && dragY< proportionsY(840) && dragX> proportionsX(75) && dragX< proportionsX(725)) {
+                this.x = dragX;
+                this.y = dragY;
+                app.player.posX = dragX;
+                app.player.posY = dragY;
+
+                if(!app.system.finishGame) {
+                    socket.emit('moveMyPosition', {data: proportionsReverse(app.player.posX, app.player.posY)});
+                }
+            }
+        });
+        strikerPlayer.setImmovable();
+
+        puck = this.physics.add.sprite(app.ball.posX,app.ball.posY, 'puck');
+        puck.scaleX = percentX(app.system.fieldX);
+        puck.scaleY = percentY(app.system.fieldY);
+        puck.body.setCircle(20);
+        puck.body.setBounce(1,1);
+        puck.body.collideWorldBounds = true;
+        this.physics.add.collider(puck, border);
+        this.physics.add.collider(puck, strikerPlayer);
+
+        graphics = this.add.graphics(0,0);
+        app.system.sendMessageQuit = true;
+    }
+
+    function goal() {
+        app.ball.lastMovement=false;
+        app.system.goal = true;
+        puck.setVisible(false);
+        app.system.textGol.setVisible(true);
+    }
+
+    function update() {
+        if(app.ball.lastMovement && !app.system.goal) {
+            socket.emit('puckPosition', {data: proportionsReverse(puck.x, puck.y)});
+            puck.setVelocity((puck.body.velocity.x) * 0.997, (puck.body.velocity.y) * 0.997);   // Decremento velocità di 3 millesimi a ciclo di update
         }
         else{
-            resocontoPartita("","ENDGame",app.nickname);
+            puck.x=app.ball.posX;
+            puck.y=app.ball.posY;
         }
-    },app.timer);
-}
 
-var elementsCookie = document.cookie.split('; ');
+        strikerRival.x = app.rival.posX;
+        strikerRival.y = app.rival.posY;
+        strikerRival.label.x = app.rival.posX;
+        strikerRival.label.y = Math.floor(app.rival.posY - proportionsY(60));
 
-for(var i=0;i<elementsCookie.length;i++){
-    if(elementsCookie[i].substr(0,4)=="nick"){
-        var tmp = elementsCookie[i].split('=');
-        var tmp = tmp[1].split(';');
-        app.nickname = tmp[0];
-    }
-    if(elementsCookie[i].substr(0,10)=="selectRoom"){
-        var tmp = elementsCookie[i].split('=');
-        var tmp = tmp[1].split(';');
-        app.stanza = tmp[0];
-    }
-}
-console.log("QUESTA è LA STANZA-> ",app.stanza);
+        if(app.system.refreshScore) {
+            app.system.textScore.setVisible(false);
+            app.system.textScore = this.add.text(proportionsX(5), proportionsY(498), (app.player.score+' - '+app.rival.score), { font: `${proportionsX(32)}px Courier`, fill: '#000000' });
+            app.system.textScore.angle = -90;
+            app.system.refreshScore = false;
+        }
 
-function resocontoPartita(path, nameURL, param,method){
-    method = "post";
-    
-    var form = document.createElement("form");
-    form.setAttribute("method", method);
-
-    var hiddenField = document.createElement("input");
-    hiddenField.setAttribute("type", "hidden");
-    hiddenField.setAttribute("name", nameURL);
-
-    form.appendChild(hiddenField);
-
-    var hiddenField2 = document.createElement("input");
-    hiddenField2.setAttribute("type", "hidden");
-    hiddenField2.setAttribute("name", param);
-
-    form.appendChild(hiddenField2);
-
-
-    document.body.appendChild(form);
-    form.submit();
-}
-
-
-socket.emit("requestStartGame", {nickname:app.nickname,stanza:app.stanza});
-
-socket.on("users_game", (data) =>{
-    app.rival.nickname=data.rival;
-});
-
-socket.on("myPosition", (data) =>{
-    app.posX = data.posX;
-    app.posY = data.posY;
-});
-
-socket.on("rivalPosition", (data) =>{
-    app.rival.posX = data.posX;
-    app.rival.posY = data.posY;
-});
-
-socket.on("moveRivalPosition", (data) =>{
-    app.rival.posX = data[0];
-    app.rival.posY = data[1]; 
-});
-
-socket.on("setPositionPuck", (data) =>{
-    app.posBallX=data[0];
-    app.posBallY=data[1];
-});
-
-socket.on("puckPosition", (data) =>{
-    app.changePuck=false;
-    app.posBallX=data[0];
-    app.posBallY=data[1];
-});
-
-socket.on("setIDPorta", (data) =>{
-    app.idPorta = data.idPorta;
-});
-
-socket.on("refreshScoreGame", (data) =>{
-    if(data[0] == app.nickname){
-        app.score = data[1];
-    }
-    else{
-        app.rival.score = data[1];
-    }
-    app.bool = true;
-});
-
-socket.on("positionBall", (data) =>{
-    app.posBallX = data[0];
-    app.posBallY = data[1]; 
-    
-    app.boolBall = true;
-});
-
-socket.on("start_game", (data) => {
-    app.start=data.start;
-    
-    console.log("Inizia la partita! - Prelevo i dati necessarti per giocare...");
-    socket.emit("rivalPosition",{nickname:app.nickname,nickname_rival:app.rival.nickname});
-   
-    inizio();
-});
-
-socket.on("finishGame", () =>{
-    app.finishGame=true;
-    app.EnD=true;
-});
-
-//socket.emit("disconnection", {nickname:app.nickname});
-
-if(!app.start){
-    //console.log("Attendi l'avversario...");
-}
-
-inizio = (data) =>{
-    
-var config = {
-     type:Phaser.AUTO,
-    width:800,
-    height:900,
-    parent: 'campo',
-    physics: {
-        default: 'arcade',
-        arcade: {
-            debug: true
-        },
-    },
-    scene: {
-        preload: preload,
-        create: create,
-        update: update
-    }
-}
-
-var graphips;
-var game = new Phaser.Game(config);
-
-var striker1;
-var striker2;
-var nickname;
-var porta1;
-var porta2;
-var border = [];
-var colorBorder = ['lineRed','lineRedSmall','lineGreen','lineGreenSmall','lineYellow','lineYellowSmall','lineBlue','lineBlueSmall'];
-var positionBorderX = [18,175,785,620,18, 180,785,620];
-var positionBorderY = [225,10,225,10,675, 890,675,890];
-
-// Funzione di caricamento delle immagini all'interno il gioco
-function preload(){
-    this.load.image('background', "Sfondo_.png");
-
-    this.load.image('lineRed', "lineRed.png");
-    this.load.image('lineRedSmall', "lineRedsmall.png");
-
-    this.load.image('lineGreen', "lineGreen.png");
-    this.load.image('lineGreenSmall', "lineGreenSmall.png");
-    
-    this.load.image('lineYellow', "lineYellow.png");
-    this.load.image('lineYellowSmall', "lineYellowSmall.png");
-    
-    this.load.image('lineBlue', "lineBlue.png");
-    this.load.image('lineBlueSmall', "lineBlueSmall.png");
-    
-    this.load.image('lineCyan', "lineCyan.png");
-    this.load.image('lineCyanSmall', "lineCyanSmall.png");
-    
-    this.load.image('porta',"porta.png");
-
-    this.load.image('striker1',"striker.png");
-    this.load.image('striker2',"striker.png");
-    this.load.image('puck',"puck.png");
-}
-
-function create(){
- /*    
-    // Attraverso questo è possibile utilizzare il MultiTouch aggiungendo un puntatore (Poichè ne abbiamo uno di default)
-    this.input.addPointer();
- */
-    // Settiamo lo sfondo del gioco
-    this.image = this.add.image(400,450,'background');
-
-   
-    // Creazione dei bordi
-    for(var i=0;i<8;i++){
-        border[i] = this.physics.add.sprite(positionBorderX[i],positionBorderY[i],colorBorder[i]);
-       
-       
-        border[i].setDataEnabled();
-        border[i].name = colorBorder[i];
-        border[i].data.set('number',i);
-        border[i].setImmovable();
-    }
-
-    porta1 = this.physics.add.sprite(402,3,'porta');
-    porta1.setImmovable();
-    porta1.setVisible(false);
-    porta1.name = app.rival.nickname;
-    porta2 = this.physics.add.sprite(402,898,'porta');
-    porta2.setImmovable();
-    porta2.setVisible(false);
-    porta2.name = app.nickname;
-
-
-    textGol = this.add.text(290, 410, "Goal!", { font: '75px Courier', fill: '#000000' });
-    textGol.setVisible(false);
-    textEndGame = this.add.text(135, 410, "Finish game!", { font: '75px Courier', fill: '#000000' });
-    textEndGame.setVisible(false);
-
-    textScore = this.add.text(5, 498, (app.score+' - '+app.rival.score), { font: '32px Courier', fill: '#000000' });
-    textScore.angle = -90;
-
-    // Inizializzazione Striker1
-    striker1 = this.physics.add.sprite(app.rival.posX,app.rival.posY,'striker1').setInteractive({ draggable: true});
-    striker1.body.setCircle(40);
-
-    // Qui inizializziamo Striker2 e lo rendiamo trascinabile
-    striker2 = this.physics.add.sprite(app.posX,app.posY,'striker2').setInteractive({ draggable: true});
-    striker2.body.setCircle(40);
-    striker2.body.setBounce(1,1);
-
-//   var style2 = {font: "25px Arial Black", color: "black", wordWrap:true, wordWrapWidth: striker2.width,  align: "center"};
-    var style2 = {font: "25px Arial", fill: "#ff0044", wordWrap: { width: 300 }, wordWrapWidth: striker2.width, align: "center", backgroundColor: "#ffff00"  }
-    nickname = this.add.text(50,50, app.nickname, style2);
-   
-    // Tramite questa funzione è possibile trascinare lo striker con il cursore
-    striker2.on('drag', function(pointer, dragX, dragY){
-        
-        calcSpeedX(dragX);
-        calcSpeedY(dragY);
-
-        if(dragY>490 && dragY<840 && dragX>75 && dragX<725){
-            this.x = dragX;
-            this.y = dragY;
-            app.posX = dragX;
-            app.posY = dragY;
-            //app.velocity++;
-            if(!app.EnD){
-                socket.emit("moveMyPosition", {nickname:app.nickname, x:app.posX, y:app.posY});
+        this.physics.world.collide(puck, strikerPlayer, (data) => {
+            var diffX = 0;
+            var diffY = 0;
+            if (puck.x < strikerPlayer.x && puck.y < strikerPlayer.y) {      // pallina in alto a sinistra
+                diffX = strikerPlayer.x - puck.x;
+                diffY = strikerPlayer.y - puck.y;
+                puck.setVelocity(-10 * diffX, -10 * diffY);
+            }
+            else if (puck.x > strikerPlayer.x && puck.y < strikerPlayer.y) { // pallina in alto a destra
+                diffX = strikerPlayer.x -puck.x;
+                diffY = strikerPlayer.y -puck.y;
+                puck.setVelocity(-10 * diffX, -10 * diffY);
+            }
+            else if (puck.x < strikerPlayer.x && puck.y > strikerPlayer.y) { // pallina in basso a sinistra
+                diffX = strikerPlayer.x - puck.x;
+                diffY = strikerPlayer.y - puck.y;
+                puck.setVelocity(-10 * diffX, -10 * diffY);
+            }
+            else if (puck.x > strikerPlayer.x && puck.y > strikerPlayer.y) { // pallina in basso a destra
+                diffX = strikerPlayer.x -puck.x;
+                diffY = strikerPlayer.y -puck.y;
+                puck.setVelocity(-10 * diffX, -10 * diffY);
             }
 
-        }  
-    });
-    striker2.setImmovable();
-    
-    
-    puck = this.physics.add.sprite(app.posBallX,app.posBallY, 'puck');
-    
-    puck.body.setCircle(20);
-    puck.body.setBounce(1,1);
-    puck.body.collideWorldBounds = true;
-    
-    graphics = this.add.graphics(0,0);
-}
-
-
-function update(){
-    if(app.changePuck){
-        socket.emit("puckPosition",{nickname:app.nickname,
-            data:[puck.x, puck.y]
+            if(app.ball.lastMovement==false) {
+                socket.emit('puckPosition', {data: proportionsReverse(puck.x, puck.y)});
+                app.ball.lastMovement=true;
+            }
         });
-    }
-    else{
-        puck.x=app.posBallX;
-        puck.y=app.posBallY;
-    }
-    
-    striker1.x = app.rival.posX;
-    striker1.y = app.rival.posY;
 
-    nickname.x = striker2.x - 65;
-    nickname.y = Math.floor(striker2.y + striker2.height / 2);
-    
-    if(app.bool){
-        textScore.setVisible(false);
-        textScore = this.add.text(5, 498, (app.score+' - '+app.rival.score), { font: '32px Courier', fill: '#000000' });
-        textScore.angle = -90;
-        app.bool = false;
-    }
-    if(app.boolBall){
-        puck.x = app.posBallX;
-        puck.y = app.posBallY;
-        app.boolBall = false;
-    }
-
-    
-
-
-    // Collisione puck con striker2
-    this.physics.world.collide(puck,striker2,(data)=>{
-        console.log("Collision!");
-        var angle = calcAngle(striker2,puck);
-        console.log("ANGLE-> ",angle, "COS: ",Math.cos(angle),"SIN: ",Math.sin(angle))
-        puck.setAngle(angle);
-        puck.setVelocity(app.speedX,app.speedY);
-        
-        if(app.changePuck==false){
-            socket.emit("puckPosition",{nickname:app.nickname,
-                data:[puck.x, puck.y]
-            });
-            app.changePuck=true;
-        }
-    });
-
-    // Collisione puck con porta1
-    this.physics.collide(puck,porta1,()=>{
-        app.changePuck=false;
-        puck.destroy();
-        textGol.setVisible(true);
-        delayTime(true);
-    });
-
-    // Collisione puck con porta2
-    this.physics.collide(puck,porta2,()=>{
-        app.changePuck=false;
-        puck.destroy();
-        textGol.setVisible(true);
-        if(app.nickname == porta2.name){
-            socket.emit("goalSuffered",{nickname:app.nickname});
-            delayTime(true);
-        }
-    });
-
-    if(app.check){
-        puck.setVisible(false);
-    }
-
-    // Respawn pallina dopo il goal
-    if(app.respawnPuck && app.check){
-        app.respawnPuck=false;
-        app.check=false;
-        textGol.setVisible(false);
-
-        if(app.finishGame){
-            textEndGame.setVisible(true);
-            delayTime(false);
-        }
-        else{
-            puck = this.physics.add.sprite(app.posBallX,app.posBallY,'puck');
-            puck.body.setCircle(20);
-        
-            puck.body.collideWorldBounds = true;
-                
-            this.physics.add.collider(puck, striker2);
-            this.physics.add.collider(puck, border);
-            this.physics.add.collider([striker1,striker2], border);
-            //textGol.setVisible(false);
+        // Zona porta del rivale
+        if(!app.system.goal && puck.x > proportionsX(346) && puck.x < proportionsX(455) && puck.y > 0 && puck.y < proportionsY(45)) {
+            goal(puck);
         }
 
+        // Zona porta del player
+        if(!app.system.goal && puck.x > proportionsX(346) && puck.x < proportionsX(455) && puck.y > proportionsY(855) && puck.y < proportionsY(app.system.defaultHeight)) {
+            goal(puck);
+            socket.emit('goalSuffered');
+        }
+
+        if(app.system.finishGame) {
+            app.system.textGol.setVisible(false);
+            app.system.textEndGame.setVisible(true);
+        }
+
+        if(app.system.continueGame) { 
+            resetAction();
+            app.system.textGol.setVisible(false);
+
+            puck.x = app.ball.posX;
+            puck.y = app.ball.posY;
+            puck.setVisible(true);
+        }
     }
-
-    this.physics.collide(puck,border,(data)=>{
-        //puck.setAngle(calcAngle(border,puck));
-        //puck.setVelocity(Math.cos(angle)*app.force, Math.sin(angle)*app.force);
-    });
-
-    
-    
-}
 }
